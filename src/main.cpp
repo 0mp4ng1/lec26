@@ -14,13 +14,6 @@
 #include <arpa/inet.h>
 #include <netinet/ether.h>
 
-
-#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
-#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
-
-#define IP2STR(a) (a)[0], (a)[1], (a)[2], (a)[3]
-#define IPSTR "%u.%u.%u.%u"
-
 #pragma pack(push, 1)
 struct EthArpPacket final {
 	EthHdr eth_;
@@ -125,7 +118,7 @@ void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp
 }
 
 int main(int argc, char* argv[]) {
-	if (argc < 4 && argc%2 == 0) {
+	if (argc < 4 || argc%2 == 0) {
 		usage();
 		return -1;
 	}
