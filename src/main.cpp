@@ -35,8 +35,8 @@ void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp
 EthArpPacket packet;
 
 void usage() {
-	printf("syntax: send-arp-test <interface>\n");
-	printf("sample: send-arp-test wlan0\n");
+	printf("syntax : send-arp <interface> <sender ip> <target ip> [<sender ip 2> <target ip 2> ...]\n");
+	printf("sample : send-arp wlan0 192.168.10.2 192.168.10.1\n");
 }
 
 void GetMyInfo(Ip* myIp, Mac* myMac, char* dev){
