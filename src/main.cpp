@@ -34,10 +34,10 @@ struct EthIpPacket final {
 
 #pragma pack(push, 1)
 struct FlowInfo final {
-	Ip senderIp;
-	Ip targetIp;
-	Mac senderMac;
-	Mac targetMac;
+	Ip senderIp = Ip(0);
+	Ip targetIp = Ip(0);
+	Mac senderMac = Mac::nullMac();
+	Mac targetMac = Mac::nullMac();
 	EthArpPacket packet;
 };
 #pragma pack(pop)
@@ -77,7 +77,6 @@ void GetMyInfo(Ip* myIp, Mac* myMac, char* dev){
 
 
 Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip){
-			printf("hello\n");
 	Mac mac;
 	Mac broadcast = Mac::broadcastMac();
 	Mac unknown = Mac::nullMac();
@@ -154,7 +153,11 @@ int main(int argc, char* argv[]) {
 	GetMyInfo(&attackerIp, &attackerMac, dev);
 	printf("[ATTACKER MAC ADDR = %s]\n", std::string(attackerMac).c_str());
 	printf("[ATTACKER IP ADDR = %s]\n", std::string(attackerIp).c_str());
-	arpTable[attackerIp] = attackerMac;
+	// arpTable[attackerIp] = attackerMac;
+	auto ret = arpTable.insert({attackerIp, attackerMac});
+	printf("잘 들어감 ? : %d\n",ret.second);
+	auto ret2 = arpTable.insert({attackerIp, attackerMac});
+	printf("잘 들어감 ? 2 : %d\n",ret2.second);
 
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	if (handle == nullptr) {
@@ -163,27 +166,37 @@ int main(int argc, char* argv[]) {
 	}
 	
 	for(int i=1;i<argc/2;i++){
+		printf("hello\n");
 		FlowInfo info;
 		info.senderIp = Ip(argv[2*i]);
 		info.targetIp = Ip(argv[2*i+1]);
 		flows.push_back(info);
-		printf("%d\n",arpTable.count(info.senderIp));
-		
 
 		//arpTable에 senderIp에 대한 정보가 있는지 확인
-		if(!arpTable.count(info.senderIp))
-			arpTable[info.senderIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
-		else
-			fprintf(stderr, "couldn't get sender mac address (%s)\n",errbuf);
+		// if(auto ret = arpTable.count(info.senderIp))
+		// 	arpTable[info.senderIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
+		// else
+		// 	fprintf(stderr, "couldn't get sender mac address (%s)\n",errbuf);
 	
+		// if(!arpTable.count(info.targetIp))
+		// 	arpTable[info.targetIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
+		// else
+		// 	fprintf(stderr, "couldn't get target mac address (%s)\n",errbuf);
+
+		Mac tmp = Mac::nullMac();
 		
-		if(!arpTable.count(info.targetIp))
-			arpTable[info.targetIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
-		else
-			fprintf(stderr, "couldn't get target mac address (%s)\n",errbuf);
+		if(arpTable.insert({info.senderIp, tmp}).second)
+			arpTable.insert({info.senderIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp)});
+		if(arpTable.insert({info.targetIp, tmp}).second)
+			arpTable.insert({info.targetIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp)});
 		
-		info.senderMac = arpTable[info.senderIp];
-		info.targetMac = arpTable[info.targetIp];
+		printf("dkjaf;ldkjfasdkl;fj\n");
+		
+		// info.senderMac = arpTable[info.senderIp];
+		// info.targetMac = arpTable[info.targetIp];
+
+		info.senderMac = arpTable.find(info.senderIp)->second;
+		info.targetMac = arpTable.find(info.targetIp)->second;
 
 		printf("[SENDER MAC ADDR = %s]\n", std::string(info.senderMac).data());
 		printf("[SENDER IP ADDR = %s]\n", std::string(info.senderIp).data());
