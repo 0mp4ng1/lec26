@@ -118,7 +118,7 @@ void SendArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp
 }
 
 int main(int argc, char* argv[]) {
-	if (argc < 4 || argc%2 == 0) {
+	if (argc < 4 || argc%2) {
 		usage();
 		return -1;
 	}
