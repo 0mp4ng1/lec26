@@ -30,3 +30,11 @@ sample : arp-spoof wlan0 192.168.10.2 192.168.10.1 192.168.10.1 192.168.10.2
 - VirtualBox에서 Guest OS를 attacker로 사용할 때 sender로부터의 spoofeed IP packet이 보이지 않은 경우 https://gilgil.gitlab.io/2021/09/29/1.html 문서를 참고할 것.
 
 - Host OS의 네트워크를 사용하지 않고 별도의 USB 기반 네트워크 어댑터를 Guest OS에서 사용하는 것을 추천. 다이소에서 5000원으로 구매할 수 있음. - https://www.youtube.com/watch?v=f8baVYPM9Pc
+
+## 코드리뷰
+- resolving 2번 (보통은 4번으로 짤 가능성 높음)
+- Thread 사용 (infect & relay)
+- Ctrl+C로 종료 추가 (`signal(SIGINT, function pointer)`)
+- sleep 필요 (1초는 너무 김) (정상 패킷으로 덮어쓰이는거 방지)
+- IP, MAC std::vertor, map, list 등을 이용해서 관리
+- HOST ARP TABLE 처리 (변조될 가능성)
