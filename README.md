@@ -34,7 +34,7 @@ sample : arp-spoof wlan0 192.168.10.2 192.168.10.1 192.168.10.1 192.168.10.2
 ## 코드리뷰
 - resolving 2번 (보통은 4번으로 짤 가능성 높음)
 - Thread 사용 (infect & relay)
-- Ctrl+C로 종료 추가 (`signal(SIGINT, function pointer)`)
+- Ctrl+C로 종료 추가 : `signal(SIGINT, function pointer)`
 - sleep 필요 (1초는 너무 김) (정상 패킷으로 덮어쓰이는거 방지)
 - IP, MAC std::vertor, map, list 등을 이용해서 관리
 - HOST ARP TABLE 처리 (변조될 가능성)
