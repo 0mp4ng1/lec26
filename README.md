@@ -41,4 +41,3 @@ sample : arp-spoof wlan0 192.168.10.2 192.168.10.1 192.168.10.1 192.168.10.2
 - Eth Header, IP Header 이용
 - Ctrl+C로 종료 추가 : `signal(SIGINT, function pointer)`
 - sleep 필요 (1초는 너무 김) (정상 패킷으로 덮어쓰이는거 방지) -> 사실 노트북 두대로 확인 필요
-- HOST ARP TABLE 처리 (변조될 가능성)
