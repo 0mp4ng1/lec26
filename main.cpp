@@ -13,7 +13,7 @@
 
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
-char* host;
+char host[] = "Host: ";
 
 #pragma pack(push, 1)
 struct IpTcpPacket final{
@@ -107,13 +107,6 @@ bool checkHttp(IpTcpPacket * tcpPacket){
 		return false;
 }
 
-bool checkGet(Data data){
-	if(!strncmp(reinterpret_cast<const char*>(data.data_), "GET", 3))
-		return true;
-	else
-		return false;
-}
-
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	      struct nfq_data *nfa, void *data)
 {
@@ -123,23 +116,21 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	printf("entering callback\n");
 	ret = nfq_get_payload(nfa, &packet);
 
-	if(checkTcp(packet)){
-		IpTcpPacket *tcpPacket = (struct IpTcpPacket *)packet;
-		if(checkHttp(tcpPacket)){
-			Data data = TcpHdr::parseData(&(tcpPacket->ip_), &(tcpPacket->tcp_));
-			printf("%d\n",data.size_);
-			if(data.size_ > 0){
-				if(checkGet(data)){
-					int len = 0;
-					while(len <= data.size_){
-						if(!strncmp(reinterpret_cast<const char*>(&data.data_[len]), host, strlen(host))){
-							printf("!!!!Blocked!!!!\n");
-							return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-						}
-						len++;
+
+	
+	if(ret>=0){
+		if(checkTcp(packet)){
+			IpTcpPacket *tcpPacket = (struct IpTcpPacket *)packet;
+			if(checkHttp(tcpPacket)){
+				Data data = TcpHdr::parseData(&(tcpPacket->ip_), &(tcpPacket->tcp_));
+				printf("%d\n",data.size_);
+				if(data.size_ > 0){
+					if(strstr(reinterpret_cast<const char*>(data.data_), host) != NULL){
+						printf("!!!!Blocked!!!!\n");
+						return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
 					}
-				}
-			}			
+				}			
+			}
 		}
 	}
 
@@ -161,7 +152,10 @@ int main(int argc, char **argv)
 	}
 
 
-    host = argv[1];
+    // host = argv[1];
+
+	strcat(host, argv[1]);
+	strcat(host, "\r\n");
     printf("%s\n",host);
 
     
