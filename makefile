@@ -11,3 +11,4 @@ echo-server:
 clean:
 	cd echo-client; make clean; cd ..
 	cd echo-server; make clean; cd ..
+	cd bin; rm -f echo-server; rm -f echo-client; cd ..

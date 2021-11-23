@@ -4,11 +4,12 @@
 #include <sys/socket.h>
 #include <iostream>
 #include <thread>
+#include <vector>
+#include <algorithm>
 
 using namespace std;
 
-int cli_sd[100];
-int num_cli;
+vector<int> cli_sd;
 
 void usage() {
 	cout << "syntax : echo-server <port> [-e[-b]]\n";
@@ -60,9 +61,10 @@ void recvThread(int sd) {
 			}
 		}
         if(param.broad) {
-            for(int i=0;i<num_cli;i++){
-				if(cli_sd[i]!=sd)
-                res = send(cli_sd[i], buf, res, 0);
+            for(auto i_sd:cli_sd){
+				if(i_sd==sd)
+					continue;
+                res = send(i_sd, buf, res, 0);
                 if (res == 0 || res == -1) {
                     cerr << "send return " << res;
                     perror(" ");
@@ -71,6 +73,9 @@ void recvThread(int sd) {
             }
         }
 	}
+	auto this_sd = find(cli_sd.begin(), cli_sd.end(), sd);
+	cli_sd.erase(this_sd);
+	printf("clinet %d : ",sd);
 	cout << "disconnected\n";
 	close(sd);
 }
@@ -115,12 +120,13 @@ int main(int argc, char* argv[]) {
 	while (true) {
 		struct sockaddr_in cli_addr;
 		socklen_t len = sizeof(cli_addr);
-		cli_sd[num_cli] = accept(sd, (struct sockaddr *)&cli_addr, &len);
-		if (cli_sd[num_cli] == -1) {
+		int this_sd = accept(sd, (struct sockaddr *)&cli_addr, &len);
+		if (this_sd == -1) {
 			perror("accept");
 			break;
 		}
-		thread* t = new thread(recvThread, cli_sd[num_cli++]);
+		cli_sd.push_back(this_sd);
+		thread* t = new thread(recvThread, this_sd);
 		t->detach();
 	}
 	close(sd);
