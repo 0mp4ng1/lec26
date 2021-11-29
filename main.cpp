@@ -12,8 +12,15 @@ struct TcpPacket final{
     EthHdr eth_;
 	IpHdr ip_;
 	TcpHdr tcp_;
+    char data[256];
 };
 #pragma pack(pop)
+
+enum Protocol{
+    NOT_IP_TCP,
+    HTTP,
+    HTTPS
+};
 
 void usage() {
 	printf("syntax : tcp-block <interface> <pattern>\n");
@@ -82,45 +89,101 @@ bool checkTcp(const u_char* packet){
     else return false;
 }
 
-bool isOrgPkt(const u_char* packet, char* pattern){
+Protocol isOrgPkt(const u_char* packet, char* pattern){
     if(checkIp(packet)){
         if(checkTcp(packet)){
             TcpPacket *tcpPacket = (struct TcpPacket *)packet;
-            Data data = TcpHdr::parseData(&(tcpPacket->ip_), &(tcpPacket->tcp_));
-            printf("it's tcp\n");
-            if(data.size_ > 0){
-                if(strnstr(reinterpret_cast<const char*>(data.data_), pattern, data.size_))
-                    return true;
+            int dataSize = tcpPacket->ip_.len() - tcpPacket->ip_.hl() * 4 - tcpPacket->tcp_.off() * 4;
+            if(dataSize > 0){
+                if(strnstr(tcpPacket->data, pattern, dataSize)){
+                    if(tcpPacket->tcp_.dport() == 80)
+                        return HTTP;
+                    if(tcpPacket->tcp_.dport() == 443)
+                        return HTTPS;
+                }
             }
+
         }
     }
-    return false;
+    return NOT_IP_TCP;
 }
 
-bool sendFwdBlkPkt(pcap_t* handle, const u_char* orgPkt, uint32_t pktSize, Mac myMac){
+bool sendFwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Mac myMac){
     u_char *fwdPkt_ = (u_char *)malloc(pktSize);
-    memcpy(fwdPkt_, orgPkt, pktSize);
+    memcpy(fwdPkt_, packet, pktSize);
+    TcpPacket *orgPkt = (TcpPacket *)packet;
     TcpPacket *fwdPkt = (TcpPacket *)fwdPkt_;
+
+    int dataSize = orgPkt->ip_.len() - orgPkt->ip_.hl() * 4 - orgPkt->tcp_.off() * 4;
+
     fwdPkt->eth_.smac_ = myMac;
 
     fwdPkt->ip_.len_ = htons(sizeof(struct IpHdr) + sizeof(struct TcpHdr));
-    fwdPkt->ip_.ttl_ = 128;
+    fwdPkt->ip_.sum_ = htons(IpHdr::calcChecksum(&(fwdPkt->ip_)));
+    
+    fwdPkt->tcp_.seq_ = htonl(orgPkt->tcp_.seq() + dataSize);
+    fwdPkt->tcp_.off_rsvd_ = (sizeof(TcpHdr) / 4) << 4;
+    fwdPkt->tcp_.flags_ = TcpHdr::Rst | TcpHdr::Ack;
+    fwdPkt->tcp_.sum_ = htons(TcpHdr::calcChecksum(&(fwdPkt->ip_), &(fwdPkt->tcp_)));
+    int res = pcap_sendpacket(handle, fwdPkt_, sizeof(fwdPkt));
+	if (res != 0)
+		return false;
+
+    return true;
+}
+
+bool sendBwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Protocol type, Mac myMac){
+    char blockData[56] = "HTTP/1.0 302 Redirect\r\nLocation: http://warning.or.kr\r\n";
+    
+    u_char *bwdPkt_ = (u_char *)malloc(pktSize);
+    memcpy(bwdPkt_, packet, pktSize);
+    TcpPacket *orgPkt = (TcpPacket *)packet;
+    TcpPacket *bwdPkt = (TcpPacket *)bwdPkt_;
+
+    int dataSize = orgPkt->ip_.len() - orgPkt->ip_.hl() * 4 - orgPkt->tcp_.off() * 4;
+
+    bwdPkt->eth_.smac_ = myMac;
+    bwdPkt->eth_.dmac_ = orgPkt->eth_.smac();
+
+    bwdPkt->ip_.len_ = htons(sizeof(struct IpHdr) + sizeof(struct TcpHdr) + strlen(blockData));
+    bwdPkt->ip_.ttl_ = 128;
+    bwdPkt->ip_.sip_ = orgPkt->ip_.dip_;
+    bwdPkt->ip_.dip_ = orgPkt->ip_.sip_;
+    bwdPkt->ip_.sum_ = htons(IpHdr::calcChecksum(&(bwdPkt->ip_)));
+    
+    bwdPkt->tcp_.sport_ = orgPkt->tcp_.dport_;
+    bwdPkt->tcp_.dport_ = orgPkt->tcp_.sport_;
+    bwdPkt->tcp_.seq_ = orgPkt->tcp_.ack_;
+    bwdPkt->tcp_.ack_ = htonl(orgPkt->tcp_.seq() + dataSize);
+    bwdPkt->tcp_.off_rsvd_ = (sizeof(TcpHdr) / 4) << 4;
+    if(type == Protocol::HTTPS)
+        bwdPkt->tcp_.flags_ = TcpHdr::Rst | TcpHdr::Ack;
+    if(type == Protocol::HTTP)
+        bwdPkt->tcp_.flags_ = TcpHdr::Fin | TcpHdr::Ack;
+    memcpy(bwdPkt->data, blockData, strlen(blockData));
+    bwdPkt->tcp_.sum_ = htons(TcpHdr::calcChecksum(&(bwdPkt->ip_), &(bwdPkt->tcp_)));
+    int res = pcap_sendpacket(handle, bwdPkt_, sizeof(bwdPkt));
+	if (res != 0)
+		return false;
+
     return true;
 }
     
 
-bool block(pcap_t* handle, const u_char* orgPkt, uint32_t pktSize, Mac myMac){
-    // // Check Fin
-    // if(orgPkt->tcp_.flags() & TcpHdr::Fin)
-    //     return false;
-    
-    // // Check Rst
-    // if(orgPkt->tcp_.flags() & TcpHdr::Rst)
-    //     return false;
+bool block(pcap_t* handle, const u_char* orgPkt, uint32_t pktSize, Protocol type, Mac myMac){
+    if(sendFwdBlkPkt(handle, orgPkt, pktSize, myMac))
+        printf("Success : Send Forward Block Packet\n");
+    else{
+        printf("Failed : Send Forward Block Packet\n");
+        return false;
+    }
 
-    // uint32_t seq = orgPkt->tcp_.seq();
-    // uint32_t ack = orgPkt->tcp_.ack();
-    // uint32_t newSeq = seq + orgPkt->data_.size_;
+    if(sendBwdBlkPkt(handle, orgPkt, pktSize, type, myMac))
+        printf("Success : Send Backward Block Packet\n");
+    else{
+        printf("Failed : Send Backward Block Packet\n");
+        return false;
+    }
 
     return false;
 
@@ -166,13 +229,13 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 
-        if(isOrgPkt(packet, pattern)){
-            printf("found\n");
-            if(block(handle, packet, header->caplen, myMac)){
-                printf("hi\n");
-                
-            }
+        Protocol type = isOrgPkt(packet, pattern);
 
+        if(type){
+            if(type == Protocol::HTTP) printf("HTTP\n");
+            if(type == Protocol::HTTPS) printf("HTTPS\n");
+            if(block(handle, packet, header->caplen, type, myMac))
+               printf("Block Success!!\n"); 
         }
 
     }

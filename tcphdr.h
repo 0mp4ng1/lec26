@@ -1,6 +1,5 @@
 #pragma once
 
-#include "data.h"
 #include "iphdr.h"
 
 // ----------------------------------------------------------------------------
@@ -40,6 +39,5 @@ struct TcpHdr final {
 	};
 
 	static uint16_t calcChecksum(IpHdr* ipHdr, TcpHdr* tcpHdr);
-	static Data parseData(IpHdr* ipHdr, TcpHdr* tcpHdr);
 };
 #pragma pack(pop)
