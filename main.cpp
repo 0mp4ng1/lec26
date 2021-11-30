@@ -124,6 +124,8 @@ bool sendFwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Mac m
     fwdPkt->tcp_.seq_ = htonl(orgPkt->tcp_.seq() + dataSize);
     fwdPkt->tcp_.off_rsvd_ = (sizeof(TcpHdr) / 4) << 4;
     fwdPkt->tcp_.flags_ = TcpHdr::Rst | TcpHdr::Ack;
+    fwdPkt->tcp_.flags_ &= ~TcpHdr::Syn;
+
     fwdPkt->tcp_.sum_ = htons(TcpHdr::calcChecksum(&(fwdPkt->ip_), &(fwdPkt->tcp_)));
 
     int res = pcap_sendpacket(handle, fwdPkt_, pktSize);
