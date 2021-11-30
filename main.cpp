@@ -108,7 +108,7 @@ Protocol isOrgPkt(const u_char* packet, char* pattern){
     return NOT_IP_TCP;
 }
 
-bool sendFwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Mac myMac){
+bool sendFwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Mac myMac){   
     u_char *fwdPkt_ = (u_char *)malloc(pktSize);
     memcpy(fwdPkt_, packet, pktSize);
     TcpPacket *orgPkt = (TcpPacket *)packet;
@@ -125,9 +125,13 @@ bool sendFwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Mac m
     fwdPkt->tcp_.off_rsvd_ = (sizeof(TcpHdr) / 4) << 4;
     fwdPkt->tcp_.flags_ = TcpHdr::Rst | TcpHdr::Ack;
     fwdPkt->tcp_.sum_ = htons(TcpHdr::calcChecksum(&(fwdPkt->ip_), &(fwdPkt->tcp_)));
-    int res = pcap_sendpacket(handle, fwdPkt_, sizeof(fwdPkt));
-	if (res != 0)
+
+    int res = pcap_sendpacket(handle, fwdPkt_, pktSize);
+    free(fwdPkt_);
+	if (res != 0){
+        fprintf(stderr, "Send Forward Failed return %d error=%s\n", res, pcap_geterr(handle));
 		return false;
+    }
 
     return true;
 }
@@ -145,27 +149,35 @@ bool sendBwdBlkPkt(pcap_t* handle, const u_char* packet, uint32_t pktSize, Proto
     bwdPkt->eth_.smac_ = myMac;
     bwdPkt->eth_.dmac_ = orgPkt->eth_.smac();
 
-    bwdPkt->ip_.len_ = htons(sizeof(struct IpHdr) + sizeof(struct TcpHdr) + strlen(blockData));
     bwdPkt->ip_.ttl_ = 128;
     bwdPkt->ip_.sip_ = orgPkt->ip_.dip_;
     bwdPkt->ip_.dip_ = orgPkt->ip_.sip_;
-    bwdPkt->ip_.sum_ = htons(IpHdr::calcChecksum(&(bwdPkt->ip_)));
     
     bwdPkt->tcp_.sport_ = orgPkt->tcp_.dport_;
     bwdPkt->tcp_.dport_ = orgPkt->tcp_.sport_;
     bwdPkt->tcp_.seq_ = orgPkt->tcp_.ack_;
     bwdPkt->tcp_.ack_ = htonl(orgPkt->tcp_.seq() + dataSize);
     bwdPkt->tcp_.off_rsvd_ = (sizeof(TcpHdr) / 4) << 4;
-    if(type == Protocol::HTTPS)
+    if(type == Protocol::HTTPS){
+        bwdPkt->ip_.len_ = htons(sizeof(struct IpHdr) + sizeof(struct TcpHdr));
         bwdPkt->tcp_.flags_ = TcpHdr::Rst | TcpHdr::Ack;
-    if(type == Protocol::HTTP)
+    }
+    if(type == Protocol::HTTP){
+        bwdPkt->ip_.len_ = htons(sizeof(struct IpHdr) + sizeof(struct TcpHdr) + strlen(blockData));
         bwdPkt->tcp_.flags_ = TcpHdr::Fin | TcpHdr::Ack;
-    memcpy(bwdPkt->data, blockData, strlen(blockData));
+        memcpy(bwdPkt->data, blockData, strlen(blockData));
+        pktSize += strlen(blockData);
+    }
+    bwdPkt->tcp_.flags_ &= ~TcpHdr::Syn;
+    bwdPkt->ip_.sum_ = htons(IpHdr::calcChecksum(&(bwdPkt->ip_)));
     bwdPkt->tcp_.sum_ = htons(TcpHdr::calcChecksum(&(bwdPkt->ip_), &(bwdPkt->tcp_)));
-    int res = pcap_sendpacket(handle, bwdPkt_, sizeof(bwdPkt));
-	if (res != 0)
-		return false;
+    int res = pcap_sendpacket(handle, bwdPkt_, pktSize);
 
+    free(bwdPkt_);
+	if (res != 0){
+        fprintf(stderr, "Send Backward Failed return %d error=%s\n", res, pcap_geterr(handle));
+		return false;
+    }
     return true;
 }
     
@@ -237,7 +249,6 @@ int main(int argc, char* argv[]) {
             if(block(handle, packet, header->caplen, type, myMac))
                printf("Block Success!!\n"); 
         }
-
     }
 	
 
