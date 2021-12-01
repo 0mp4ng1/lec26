@@ -24,6 +24,6 @@ sample : tcp-block wlan0 "Host: test.gilgil.net"
 
 #### Backward Test
 <img src = "https://user-images.githubusercontent.com/76524512/144200277-d4410ed1-6871-49f9-bb5d-477ebe8a2b09.gif">
-<img src = "https://user-images.githubusercontent.com/76524512/144200417-985fdc01-c82b-49a1-9f2b-ecb8fa939aad.gif)">
+<img src = "https://user-images.githubusercontent.com/76524512/144200417-985fdc01-c82b-49a1-9f2b-ecb8fa939aad.gif">
 
 
